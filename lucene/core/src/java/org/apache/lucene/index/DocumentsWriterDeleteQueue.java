@@ -21,6 +21,8 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
+import org.apache.lucene.index.DocValuesQueryUpdate.BinaryDocValuesQueryUpdate;
+import org.apache.lucene.index.DocValuesQueryUpdate.NumericDocValuesQueryUpdate;
 import org.apache.lucene.index.DocValuesUpdate.BinaryDocValuesUpdate;
 import org.apache.lucene.index.DocValuesUpdate.NumericDocValuesUpdate;
 import org.apache.lucene.search.Query;
@@ -138,6 +140,12 @@ final class DocumentsWriterDeleteQueue implements Accountable, Closeable {
     return seqNo;
   }
 
+  long addDocValuesUpdates(DocValuesQueryUpdate... updates) {
+    long seqNo = add(new DocValuesQueryUpdatesNode(updates));
+    tryApplyGlobalSlice();
+    return seqNo;
+  }
+
   static Node<Term> newNode(Term term) {
     return new TermNode(term);
   }
@@ -148,6 +156,10 @@ final class DocumentsWriterDeleteQueue implements Accountable, Closeable {
 
   static Node<DocValuesUpdate[]> newNode(DocValuesUpdate... updates) {
     return new DocValuesUpdatesNode(updates);
+  }
+
+  static Node<DocValuesQueryUpdate[]> newNode(DocValuesQueryUpdate... updates) {
+    return new DocValuesQueryUpdatesNode(updates);
   }
 
   /** invariant for document update */
@@ -529,6 +541,53 @@ final class DocumentsWriterDeleteQueue implements Accountable, Closeable {
       if (item.length > 0) {
         sb.append("term=").append(item[0].term).append("; updates: [");
         for (DocValuesUpdate update : item) {
+          sb.append(update.field).append(':').append(update.valueToString()).append(',');
+        }
+        sb.setCharAt(sb.length() - 1, ']');
+      }
+      return sb.toString();
+    }
+  }
+
+  private static final class DocValuesQueryUpdatesNode extends Node<DocValuesQueryUpdate[]> {
+
+    DocValuesQueryUpdatesNode(DocValuesQueryUpdate... updates) {
+      super(updates);
+    }
+
+    @Override
+    void apply(BufferedUpdates bufferedUpdates, int docIDUpto) {
+      for (DocValuesQueryUpdate update : item) {
+        switch (update.type) {
+          case NUMERIC:
+            bufferedUpdates.addNumericUpdate((NumericDocValuesQueryUpdate) update, docIDUpto);
+            break;
+          case BINARY:
+            bufferedUpdates.addBinaryUpdate((BinaryDocValuesQueryUpdate) update, docIDUpto);
+            break;
+          case NONE:
+          case SORTED:
+          case SORTED_SET:
+          case SORTED_NUMERIC:
+          default:
+            throw new IllegalArgumentException(
+                update.type + " DocValues updates not supported yet!");
+        }
+      }
+    }
+
+    @Override
+    boolean isDelete() {
+      return false;
+    }
+
+    @Override
+    public String toString() {
+      StringBuilder sb = new StringBuilder();
+      sb.append("docValuesQueryUpdates: ");
+      if (item.length > 0) {
+        sb.append("query=").append(item[0].query).append("; updates: [");
+        for (DocValuesQueryUpdate update : item) {
           sb.append(update.field).append(':').append(update.valueToString()).append(',');
         }
         sb.setCharAt(sb.length() - 1, ']');

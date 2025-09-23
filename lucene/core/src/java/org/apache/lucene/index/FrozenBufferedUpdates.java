@@ -25,12 +25,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.IntConsumer;
-import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreMode;
-import org.apache.lucene.search.Scorer;
-import org.apache.lucene.search.Weight;
+import org.apache.lucene.search.*;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.InfoStream;
@@ -69,6 +64,9 @@ final class FrozenBufferedUpdates {
 
   private final int fieldUpdatesCount;
 
+  private final Map<String, FieldQueryUpdatesBuffer> fieldQueryUpdates;
+  private final int fieldQueryUpdatesCount;
+
   final int bytesUsed;
 
   private long delGen = -1; // assigned by BufferedUpdatesStream once pushed
@@ -105,10 +103,15 @@ final class FrozenBufferedUpdates {
     this.fieldUpdates = Map.copyOf(updates.fieldUpdates);
     this.fieldUpdatesCount = updates.numFieldUpdates.get();
 
+    updates.fieldQueryUpdates.values().forEach(FieldQueryUpdatesBuffer::finish);
+    this.fieldQueryUpdates = Map.copyOf(updates.fieldQueryUpdates);
+    this.fieldQueryUpdatesCount = updates.numFieldQueryUpdates.get();
+
     bytesUsed =
         (int)
             ((deleteTerms.ramBytesUsed() + deleteQueries.length * (long) BYTES_PER_DEL_QUERY)
-                + updates.fieldUpdatesBytesUsed.get());
+                + updates.fieldUpdatesBytesUsed.get()
+                + updates.numFieldQueryUpdates.get());
 
     if (infoStream != null && infoStream.isEnabled("BD")) {
       infoStream.message(
@@ -170,8 +173,176 @@ final class FrozenBufferedUpdates {
     totalDelCount += applyTermDeletes(segStates);
     totalDelCount += applyQueryDeletes(segStates);
     totalDelCount += applyDocValuesUpdates(segStates);
+    totalDelCount += applyDocValuesQueryUpdates(segStates);
 
     return totalDelCount;
+  }
+
+  private long applyDocValuesQueryUpdates(BufferedUpdatesStream.SegmentState[] segStates)
+      throws IOException {
+
+    if (fieldQueryUpdates.isEmpty()) {
+      return 0;
+    }
+
+    long startNS = System.nanoTime();
+
+    long updateCount = 0;
+
+    for (BufferedUpdatesStream.SegmentState segState : segStates) {
+
+      if (delGen < segState.delGen) {
+        // segment is newer than this deletes packet
+        continue;
+      }
+
+      if (segState.rld.refCount() == 1) {
+        // This means we are the only remaining reference to this segment, meaning
+        // it was merged away while we were running, so we can safely skip running
+        // because we will run on the newly merged segment next:
+        continue;
+      }
+      if (fieldQueryUpdates.isEmpty() == false) {
+        final boolean isSegmentPrivateDeletes = privateSegment != null;
+        updateCount +=
+            applyDocValuesQueryUpdates(
+                segState, fieldQueryUpdates, delGen, isSegmentPrivateDeletes);
+      }
+    }
+
+    if (infoStream.isEnabled("BD")) {
+      infoStream.message(
+          "BD",
+          String.format(
+              Locale.ROOT,
+              "applyDocValuesQueryUpdates %.1f msec for %d segments, %d field updates; %d new updates",
+              (System.nanoTime() - startNS) / (double) TimeUnit.MILLISECONDS.toNanos(1),
+              segStates.length,
+              fieldQueryUpdatesCount,
+              updateCount));
+    }
+
+    return updateCount;
+  }
+
+  private static long applyDocValuesQueryUpdates(
+      BufferedUpdatesStream.SegmentState segState,
+      Map<String, FieldQueryUpdatesBuffer> updates,
+      long delGen,
+      boolean segmentPrivateDeletes)
+      throws IOException {
+
+    final LeafReaderContext readerContext = segState.reader.getContext();
+
+    // We first write all our updates private, and only in the end publish to the ReadersAndUpdates
+    final List<DocValuesFieldUpdates> resolvedUpdates = new ArrayList<>();
+    long updateCount = 0;
+
+    for (Map.Entry<String, FieldQueryUpdatesBuffer> fieldUpdate : updates.entrySet()) {
+      String updateField = fieldUpdate.getKey();
+      DocValuesFieldUpdates dvUpdates = null;
+      FieldQueryUpdatesBuffer value = fieldUpdate.getValue();
+      boolean isNumeric = value.isNumeric();
+
+      FieldQueryUpdatesBuffer.BufferedUpdateIterator iterator = value.iterator();
+      FieldQueryUpdatesBuffer.BufferedUpdate bufferedUpdate;
+      while ((bufferedUpdate = iterator.next()) != null) {
+        Query query = bufferedUpdate.query;
+        int limit;
+        if (delGen == segState.delGen) {
+          assert segmentPrivateDeletes;
+          limit = bufferedUpdate.docUpTo;
+        } else {
+          limit = Integer.MAX_VALUE;
+        }
+        final IndexSearcher searcher = new IndexSearcher(readerContext.reader());
+        searcher.setQueryCache(null);
+        query = searcher.rewrite(query);
+        final Weight weight = searcher.createWeight(query, ScoreMode.COMPLETE_NO_SCORES, 1);
+        final Scorer scorer = weight.scorer(readerContext);
+        if (scorer != null) {
+          final DocIdSetIterator it = scorer.iterator();
+
+          final BytesRef binaryValue;
+          final long longValue;
+          if (bufferedUpdate.hasValue == false) {
+            longValue = -1;
+            binaryValue = null;
+          } else {
+            longValue = bufferedUpdate.numericValue;
+            binaryValue = bufferedUpdate.binaryValue;
+          }
+          if (dvUpdates == null) {
+            if (isNumeric) {
+              if (value.hasSingleValue()) {
+                dvUpdates =
+                    new NumericDocValuesFieldUpdates.SingleValueNumericDocValuesFieldUpdates(
+                        delGen, updateField, segState.reader.maxDoc(), value.getNumericValue(0));
+              } else {
+                dvUpdates =
+                    new NumericDocValuesFieldUpdates(
+                        delGen,
+                        updateField,
+                        value.getMinNumeric(),
+                        value.getMaxNumeric(),
+                        segState.reader.maxDoc());
+              }
+            } else {
+              dvUpdates =
+                  new BinaryDocValuesFieldUpdates(delGen, updateField, segState.reader.maxDoc());
+            }
+            resolvedUpdates.add(dvUpdates);
+          }
+
+          final IntConsumer docIdConsumer;
+          final DocValuesFieldUpdates update = dvUpdates;
+          if (bufferedUpdate.hasValue == false) {
+            docIdConsumer = doc -> update.reset(doc);
+          } else if (isNumeric) {
+            docIdConsumer = doc -> update.add(doc, longValue);
+          } else {
+            docIdConsumer = doc -> update.add(doc, binaryValue);
+          }
+
+          final Bits acceptDocs = segState.rld.getLiveDocs();
+          if (segState.rld.sortMap != null && segmentPrivateDeletes) {
+            // This segment was sorted on flush; we must apply seg-private deletes carefully in this
+            // case:
+            int doc;
+            while ((doc = it.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+              if (acceptDocs == null || acceptDocs.get(doc)) {
+                // The limit is in the pre-sorted doc space:
+                if (segState.rld.sortMap.newToOld(doc) < limit) {
+                  docIdConsumer.accept(doc);
+                  updateCount++;
+                }
+              }
+            }
+          } else {
+            int doc;
+            while ((doc = it.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+              if (doc >= limit) {
+                break; // no more docs that can be updated for this term
+              }
+              if (acceptDocs == null || acceptDocs.get(doc)) {
+                docIdConsumer.accept(doc);
+                updateCount++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // now freeze & publish:
+    for (DocValuesFieldUpdates update : resolvedUpdates) {
+      if (update.any()) {
+        update.finish();
+        segState.rld.addDVUpdate(update);
+      }
+    }
+
+    return updateCount;
   }
 
   private long applyDocValuesUpdates(BufferedUpdatesStream.SegmentState[] segStates)
@@ -531,7 +702,10 @@ final class FrozenBufferedUpdates {
   }
 
   boolean any() {
-    return deleteTerms.size() > 0 || deleteQueries.length > 0 || fieldUpdatesCount > 0;
+    return deleteTerms.size() > 0
+        || deleteQueries.length > 0
+        || fieldUpdatesCount > 0
+        || fieldQueryUpdatesCount > 0;
   }
 
   /**

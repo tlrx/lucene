@@ -501,7 +501,9 @@ final class DocumentsWriterPerThread implements Accountable, Lock {
       }
 
       final BufferedUpdates segmentDeletes;
-      if (pendingUpdates.deleteQueries.isEmpty() && pendingUpdates.numFieldUpdates.get() == 0) {
+      if (pendingUpdates.deleteQueries.isEmpty()
+          && pendingUpdates.numFieldUpdates.get() == 0
+          && pendingUpdates.numFieldQueryUpdates.get() == 0) {
         pendingUpdates.clear();
         segmentDeletes = null;
       } else {

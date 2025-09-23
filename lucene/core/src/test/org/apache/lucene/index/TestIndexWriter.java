@@ -20,27 +20,11 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.lucene.tests.index.DocHelper.TEXT_TYPE_STORED_WITH_TVS;
 
 import com.carrotsearch.randomizedtesting.generators.RandomPicks;
-import java.io.ByteArrayOutputStream;
-import java.io.Closeable;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.PrintStream;
-import java.io.PrintWriter;
-import java.io.StringReader;
-import java.io.StringWriter;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
@@ -58,46 +42,11 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
-import org.apache.lucene.document.BinaryDocValuesField;
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.Field;
-import org.apache.lucene.document.FieldType;
-import org.apache.lucene.document.LongPoint;
-import org.apache.lucene.document.NumericDocValuesField;
-import org.apache.lucene.document.SortedDocValuesField;
-import org.apache.lucene.document.SortedNumericDocValuesField;
-import org.apache.lucene.document.SortedSetDocValuesField;
-import org.apache.lucene.document.StoredField;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.document.TextField;
+import org.apache.lucene.document.*;
 import org.apache.lucene.index.IndexWriterConfig.OpenMode;
-import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.MatchAllDocsQuery;
-import org.apache.lucene.search.PhraseQuery;
-import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.SearcherFactory;
-import org.apache.lucene.search.SearcherManager;
-import org.apache.lucene.search.TermQuery;
-import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.store.AlreadyClosedException;
-import org.apache.lucene.store.ByteBuffersDirectory;
-import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.store.FilterDirectory;
-import org.apache.lucene.store.IOContext;
-import org.apache.lucene.store.IndexInput;
-import org.apache.lucene.store.IndexOutput;
-import org.apache.lucene.store.LockObtainFailedException;
-import org.apache.lucene.store.MMapDirectory;
-import org.apache.lucene.store.NIOFSDirectory;
-import org.apache.lucene.store.NoLockFactory;
-import org.apache.lucene.store.SimpleFSLockFactory;
-import org.apache.lucene.tests.analysis.CannedTokenStream;
-import org.apache.lucene.tests.analysis.MockAnalyzer;
-import org.apache.lucene.tests.analysis.MockTokenFilter;
-import org.apache.lucene.tests.analysis.MockTokenizer;
-import org.apache.lucene.tests.analysis.Token;
+import org.apache.lucene.search.*;
+import org.apache.lucene.store.*;
+import org.apache.lucene.tests.analysis.*;
 import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.tests.index.SuppressingConcurrentMergeScheduler;
 import org.apache.lucene.tests.mockfile.ExtrasFS;
@@ -106,17 +55,7 @@ import org.apache.lucene.tests.store.BaseDirectoryWrapper;
 import org.apache.lucene.tests.store.MockDirectoryWrapper;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.tests.util.TestUtil;
-import org.apache.lucene.util.Bits;
-import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.Constants;
-import org.apache.lucene.util.IOSupplier;
-import org.apache.lucene.util.IOUtils;
-import org.apache.lucene.util.InfoStream;
-import org.apache.lucene.util.SetOnce;
-import org.apache.lucene.util.StringHelper;
-import org.apache.lucene.util.SuppressForbidden;
-import org.apache.lucene.util.ThreadInterruptedException;
-import org.apache.lucene.util.Version;
+import org.apache.lucene.util.*;
 import org.apache.lucene.util.automaton.Automata;
 import org.apache.lucene.util.automaton.Automaton;
 import org.apache.lucene.util.automaton.CharacterRunAutomaton;
@@ -3455,7 +3394,7 @@ public class TestIndexWriter extends LuceneTestCase {
         IllegalArgumentException.class,
         () ->
             writer.softUpdateDocument(
-                null, new Document(), new NumericDocValuesField("soft_delete", 1)));
+                (Term) null, new Document(), new NumericDocValuesField("soft_delete", 1)));
 
     expectThrows(
         IllegalArgumentException.class,
@@ -3535,6 +3474,76 @@ public class TestIndexWriter extends LuceneTestCase {
 
   public void testSoftUpdatesConcurrentlyMixedDeletes() throws IOException, InterruptedException {
     softUpdatesConcurrently(true);
+  }
+
+  private Document document(String key, int version, String hostname, long timestamp) {
+    Document doc = new Document();
+    doc.add(newStringField("key", key, Field.Store.NO));
+    doc.add(newStringField("version", String.valueOf(version), Field.Store.YES));
+    doc.add(newStringField("hostname", hostname, Field.Store.NO));
+    doc.add(SortedNumericDocValuesField.indexedField("timestamp", timestamp));
+    return doc;
+  }
+
+  public void testSoftUpdateDocumentsMatchingQuery() throws IOException {
+    var path = createTempDir();
+    System.out.println(path.toAbsolutePath());
+    Directory dir = newFSDirectory(path);
+    IndexWriter writer =
+        new IndexWriter(
+            dir,
+            newIndexWriterConfig()
+                .setMergePolicy(NoMergePolicy.INSTANCE)
+                .setSoftDeletesField("soft_delete"));
+    final long timestamp = System.currentTimeMillis();
+    final String hostname = "localhost";
+
+    // add 4 docs
+    writer.addDocuments(
+        List.of(
+            document("_0", 1, hostname, timestamp),
+            document("_1", 1, hostname, timestamp + 1_000L),
+            document("_2", 1, hostname, timestamp + 2_000L),
+            document("_3", 1, hostname, timestamp)));
+
+    // soft-update documents that match the query "+key:_0 +hostname:localhost +timestamp" to
+    // "version:2"
+    BooleanQuery query =
+        new BooleanQuery.Builder()
+            .add(new TermQuery(new Term("key", "_0")), BooleanClause.Occur.MUST)
+            .add(new TermQuery(new Term("hostname", hostname)), BooleanClause.Occur.MUST)
+            .add(
+                SortedNumericDocValuesField.newSlowExactQuery("timestamp", timestamp),
+                BooleanClause.Occur.MUST)
+            .build();
+    var doc = document("_0", 2, hostname, timestamp);
+    writer.softUpdateDocument(query, doc, new NumericDocValuesField("soft_delete", 1));
+    // check in-memory segment
+    DirectoryReader reader = DirectoryReader.open(writer);
+    assertEquals(2, reader.docFreq(new Term("key", "_0")));
+    IndexSearcher searcher = new IndexSearcher(reader);
+    TopDocs topDocs = searcher.search(query, 10);
+    assertEquals(1, topDocs.totalHits.value());
+    Document document = reader.storedFields().document(topDocs.scoreDocs[0].doc);
+    assertEquals("2", document.get("version"));
+
+    // soft-update the on-disk segment to "version:3"
+    doc = document("_0", 3, hostname, timestamp);
+    writer.softUpdateDocument(query, doc, new NumericDocValuesField("soft_delete", 1));
+
+    DirectoryReader oldReader = reader;
+    reader = DirectoryReader.openIfChanged(reader, writer);
+    assertNotSame(reader, oldReader);
+    oldReader.close();
+    searcher = new IndexSearcher(reader);
+    topDocs = searcher.search(new TermQuery(new Term("key", "_0")), 10);
+    assertEquals(1, topDocs.totalHits.value());
+    document = reader.storedFields().document(topDocs.scoreDocs[0].doc);
+    assertEquals("3", document.get("version"));
+
+    writer.close();
+    reader.close();
+    dir.close();
   }
 
   public void softUpdatesConcurrently(boolean mixDeletes) throws IOException, InterruptedException {

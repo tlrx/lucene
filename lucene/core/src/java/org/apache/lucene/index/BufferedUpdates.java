@@ -24,6 +24,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import org.apache.lucene.index.DocValuesQueryUpdate.BinaryDocValuesQueryUpdate;
+import org.apache.lucene.index.DocValuesQueryUpdate.NumericDocValuesQueryUpdate;
 import org.apache.lucene.index.DocValuesUpdate.BinaryDocValuesUpdate;
 import org.apache.lucene.index.DocValuesUpdate.NumericDocValuesUpdate;
 import org.apache.lucene.search.Query;
@@ -58,17 +60,21 @@ class BufferedUpdates implements Accountable {
           + 2 * RamUsageEstimator.NUM_BYTES_OBJECT_HEADER
           + 2 * Integer.BYTES
           + 24;
-  final AtomicInteger numFieldUpdates = new AtomicInteger();
 
   final DeletedTerms deleteTerms = new DeletedTerms();
   final Map<Query, Integer> deleteQueries = new HashMap<>();
 
+  final AtomicInteger numFieldUpdates = new AtomicInteger();
   final Map<String, FieldUpdatesBuffer> fieldUpdates = new HashMap<>();
+  final Counter fieldUpdatesBytesUsed = Counter.newCounter(true);
+
+  final AtomicInteger numFieldQueryUpdates = new AtomicInteger();
+  final Map<String, FieldQueryUpdatesBuffer> fieldQueryUpdates = new HashMap<>();
+  final Counter fieldQueryUpdatesBytesUsed = Counter.newCounter(true);
 
   public static final Integer MAX_INT = Integer.valueOf(Integer.MAX_VALUE);
 
   private final Counter bytesUsed = Counter.newCounter(true);
-  final Counter fieldUpdatesBytesUsed = Counter.newCounter(true);
 
   private static final boolean VERBOSE_DELETES = false;
 
@@ -87,6 +93,7 @@ class BufferedUpdates implements Accountable {
           + (", deleteTerms=" + deleteTerms)
           + (", deleteQueries=" + deleteQueries)
           + (", fieldUpdates=" + fieldUpdates)
+          + (", fieldQueryUpdates=" + fieldQueryUpdates)
           + (", bytesUsed=" + bytesUsed);
     } else {
       String s = "gen=" + gen;
@@ -98,6 +105,9 @@ class BufferedUpdates implements Accountable {
       }
       if (numFieldUpdates.get() != 0) {
         s += " " + numFieldUpdates.get() + " field updates";
+      }
+      if (numFieldQueryUpdates.get() != 0) {
+        s += " " + numFieldQueryUpdates.get() + " field updates";
       }
       if (bytesUsed.get() != 0) {
         s += " bytesUsed=" + bytesUsed.get();
@@ -155,6 +165,23 @@ class BufferedUpdates implements Accountable {
     numFieldUpdates.incrementAndGet();
   }
 
+  void addNumericUpdate(NumericDocValuesQueryUpdate update, int docIDUpto) {
+    FieldQueryUpdatesBuffer buffer =
+        fieldQueryUpdates.computeIfAbsent(
+            update.field,
+            k -> new FieldQueryUpdatesBuffer(fieldQueryUpdatesBytesUsed, update, docIDUpto));
+    if (update.hasValue) {
+      buffer.addUpdate(update.query, update.getValue(), docIDUpto);
+    } else {
+      buffer.addNoValue(update.query, docIDUpto);
+    }
+    numFieldQueryUpdates.incrementAndGet();
+  }
+
+  void addBinaryUpdate(BinaryDocValuesQueryUpdate update, int docIDUpto) {
+    throw new UnsupportedOperationException();
+  }
+
   void clearDeleteTerms() {
     deleteTerms.clear();
   }
@@ -164,17 +191,26 @@ class BufferedUpdates implements Accountable {
     deleteQueries.clear();
     numFieldUpdates.set(0);
     fieldUpdates.clear();
-    bytesUsed.addAndGet(-bytesUsed.get());
     fieldUpdatesBytesUsed.addAndGet(-fieldUpdatesBytesUsed.get());
+    numFieldQueryUpdates.set(0);
+    fieldQueryUpdates.clear();
+    fieldQueryUpdatesBytesUsed.addAndGet(-fieldQueryUpdatesBytesUsed.get());
+    bytesUsed.addAndGet(-bytesUsed.get());
   }
 
   boolean any() {
-    return deleteTerms.size() > 0 || deleteQueries.size() > 0 || numFieldUpdates.get() > 0;
+    return deleteTerms.size() > 0
+        || deleteQueries.size() > 0
+        || numFieldUpdates.get() > 0
+        || numFieldQueryUpdates.get() > 0;
   }
 
   @Override
   public long ramBytesUsed() {
-    return bytesUsed.get() + fieldUpdatesBytesUsed.get() + deleteTerms.ramBytesUsed();
+    return bytesUsed.get()
+        + fieldUpdatesBytesUsed.get()
+        + fieldQueryUpdatesBytesUsed.get()
+        + deleteTerms.ramBytesUsed();
   }
 
   static class DeletedTerms implements Accountable {

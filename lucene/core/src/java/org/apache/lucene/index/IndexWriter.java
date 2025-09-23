@@ -22,20 +22,7 @@ import static org.apache.lucene.util.ByteBlockPool.BYTE_BLOCK_SIZE;
 import java.io.Closeable;
 import java.io.IOException;
 import java.time.Instant;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Queue;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
@@ -53,6 +40,8 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.FieldInfosFormat;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.index.DocValuesQueryUpdate.BinaryDocValuesQueryUpdate;
+import org.apache.lucene.index.DocValuesQueryUpdate.NumericDocValuesQueryUpdate;
 import org.apache.lucene.index.DocValuesUpdate.BinaryDocValuesUpdate;
 import org.apache.lucene.index.DocValuesUpdate.NumericDocValuesUpdate;
 import org.apache.lucene.index.FieldInfos.FieldNumbers;
@@ -64,35 +53,9 @@ import org.apache.lucene.internal.hppc.ObjectCursor;
 import org.apache.lucene.internal.tests.IndexPackageAccess;
 import org.apache.lucene.internal.tests.IndexWriterAccess;
 import org.apache.lucene.internal.tests.TestSecrets;
-import org.apache.lucene.search.DocIdSetIterator;
-import org.apache.lucene.search.FieldExistsQuery;
-import org.apache.lucene.search.MatchAllDocsQuery;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.Sort;
-import org.apache.lucene.search.SortField;
-import org.apache.lucene.store.AlreadyClosedException;
-import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FlushInfo;
-import org.apache.lucene.store.IOContext;
-import org.apache.lucene.store.Lock;
-import org.apache.lucene.store.LockObtainFailedException;
-import org.apache.lucene.store.LockValidatingDirectoryWrapper;
-import org.apache.lucene.store.MergeInfo;
-import org.apache.lucene.store.TrackingDirectoryWrapper;
-import org.apache.lucene.util.Accountable;
-import org.apache.lucene.util.ArrayUtil;
-import org.apache.lucene.util.Bits;
-import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.Constants;
-import org.apache.lucene.util.Counter;
-import org.apache.lucene.util.IOConsumer;
-import org.apache.lucene.util.IOFunction;
-import org.apache.lucene.util.IOUtils;
-import org.apache.lucene.util.InfoStream;
-import org.apache.lucene.util.StringHelper;
-import org.apache.lucene.util.ThreadInterruptedException;
-import org.apache.lucene.util.UnicodeUtil;
-import org.apache.lucene.util.Version;
+import org.apache.lucene.search.*;
+import org.apache.lucene.store.*;
+import org.apache.lucene.util.*;
 
 /**
  * An <code>IndexWriter</code> creates and maintains an index.
@@ -1872,6 +1835,30 @@ public class IndexWriter
   }
 
   /**
+   * Expert
+   *
+   * @param query the query
+   * @param doc the doc
+   * @param softDeletes the soft delete field
+   * @return The <a href="#sequence_number">sequence number</a> for this operation
+   * @throws IOException if there is a low-level IO error
+   * @lucene.experimental
+   */
+  public long softUpdateDocument(
+      Query query, Iterable<? extends IndexableField> doc, Field... softDeletes)
+      throws IOException {
+    if (query == null) {
+      throw new IllegalArgumentException("query must not be null");
+    }
+    if (softDeletes == null || softDeletes.length == 0) {
+      throw new IllegalArgumentException("at least one soft delete must be present");
+    }
+    return updateDocuments(
+        DocumentsWriterDeleteQueue.newNode(buildDocValuesQueryUpdate(query, softDeletes)),
+        List.of(doc));
+  }
+
+  /**
    * Updates a document's {@link NumericDocValues} for <code>field</code> to the given <code>value
    * </code>. You can only update fields that already exist in the index, not add new fields through
    * this method. You can only update fields that were indexed with doc values only.
@@ -1986,6 +1973,51 @@ public class IndexWriter
           break;
         case BINARY:
           dvUpdates[i] = new BinaryDocValuesUpdate(term, f.name(), f.binaryValue());
+          break;
+        case NONE:
+        case SORTED:
+        case SORTED_NUMERIC:
+        case SORTED_SET:
+        default:
+          throw new IllegalArgumentException(
+              "can only update NUMERIC or BINARY fields: field=" + f.name() + ", type=" + dvType);
+      }
+    }
+    return dvUpdates;
+  }
+
+  private DocValuesQueryUpdate[] buildDocValuesQueryUpdate(Query query, Field[] updates) {
+    DocValuesQueryUpdate[] dvUpdates = new DocValuesQueryUpdate[updates.length];
+    for (int i = 0; i < updates.length; i++) {
+      final Field f = updates[i];
+      final DocValuesType dvType = f.fieldType().docValuesType();
+      if (dvType == null) {
+        throw new NullPointerException(
+            "DocValuesType must not be null (field: \"" + f.name() + "\")");
+      }
+      if (dvType == DocValuesType.NONE) {
+        throw new IllegalArgumentException(
+            "can only update NUMERIC or BINARY fields! field=" + f.name());
+      }
+      // if this field doesn't exists we try to add it.
+      // if it exists and the DV type doesn't match or it is not DV only field,
+      // we will get an error.
+      globalFieldNumberMap.verifyOrCreateDvOnlyField(f.name(), dvType, false);
+      if (config.getIndexSortFields().contains(f.name())) {
+        throw new IllegalArgumentException(
+            "cannot update docvalues field involved in the index sort, field="
+                + f.name()
+                + ", sort="
+                + config.getIndexSort());
+      }
+
+      switch (dvType) {
+        case NUMERIC:
+          Long value = (Long) f.numericValue();
+          dvUpdates[i] = new NumericDocValuesQueryUpdate(query, f.name(), value);
+          break;
+        case BINARY:
+          dvUpdates[i] = new BinaryDocValuesQueryUpdate(query, f.name(), f.binaryValue());
           break;
         case NONE:
         case SORTED:
