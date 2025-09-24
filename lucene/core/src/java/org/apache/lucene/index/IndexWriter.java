@@ -16,26 +16,6 @@
  */
 package org.apache.lucene.index;
 
-import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
-import static org.apache.lucene.util.ByteBlockPool.BYTE_BLOCK_SIZE;
-
-import java.io.Closeable;
-import java.io.IOException;
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.BooleanSupplier;
-import java.util.function.IntPredicate;
-import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.FieldInfosFormat;
@@ -56,6 +36,27 @@ import org.apache.lucene.internal.tests.TestSecrets;
 import org.apache.lucene.search.*;
 import org.apache.lucene.store.*;
 import org.apache.lucene.util.*;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
+import java.util.function.IntPredicate;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
+
+import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
+import static org.apache.lucene.util.ByteBlockPool.BYTE_BLOCK_SIZE;
 
 /**
  * An <code>IndexWriter</code> creates and maintains an index.
@@ -1856,6 +1857,29 @@ public class IndexWriter
     return updateDocuments(
         DocumentsWriterDeleteQueue.newNode(buildDocValuesQueryUpdate(query, softDeletes)),
         List.of(doc));
+  }
+
+  /**
+   * Expert
+   *
+   * @param query the query
+   * @param docs the docs
+   * @param softDeletes the soft delete field
+   * @return The <a href="#sequence_number">sequence number</a> for this operation
+   * @throws IOException if there is a low-level IO error
+   * @lucene.experimental
+   */
+  public long softUpdateDocuments(
+          Query query, Iterable<? extends Iterable<? extends IndexableField>> docs, Field... softDeletes)
+          throws IOException {
+    if (query == null) {
+      throw new IllegalArgumentException("query must not be null");
+    }
+    if (softDeletes == null || softDeletes.length == 0) {
+      throw new IllegalArgumentException("at least one soft delete must be present");
+    }
+    return updateDocuments(
+            DocumentsWriterDeleteQueue.newNode(buildDocValuesQueryUpdate(query, softDeletes)), docs);
   }
 
   /**
