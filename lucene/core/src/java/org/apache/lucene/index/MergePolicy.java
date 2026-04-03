@@ -271,6 +271,7 @@ public abstract class MergePolicy {
      */
     public void mergeInit() throws IOException {
       mergeProgress.setMergeThread(Thread.currentThread());
+      MergeAbortThreadLocalChecker.set(this::checkAborted);
     }
 
     /**
@@ -292,6 +293,7 @@ public abstract class MergePolicy {
       try {
         mergeFinished(success, segmentDropped);
       } finally {
+        MergeAbortThreadLocalChecker.clear();
         final List<MergeReader> readers = mergeReaders;
         mergeReaders = List.of();
         IOUtils.applyToAll(readers, readerConsumer);

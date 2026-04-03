@@ -22,6 +22,7 @@ import java.util.Arrays;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.index.IndexFormatTooNewException;
 import org.apache.lucene.index.IndexFormatTooOldException;
+import org.apache.lucene.index.MergeAbortThreadLocalChecker;
 import org.apache.lucene.store.BufferedChecksumIndexInput;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
@@ -47,6 +48,31 @@ public final class CodecUtil {
 
   /** Constant to identify the start of a codec footer. */
   public static final int FOOTER_MAGIC = ~CODEC_MAGIC;
+
+  /**
+   * System property to configure the abort check interval in bytes for {@link #checksumEntireFile}. Default is 10MB.
+   */
+  public static final String CHECKSUM_ENTIRE_FILE_ABORT_CHECK_INTERVAL_SYSPROP =
+      "org.apache.lucene.codecs.CodecUtil.checksumEntireFile.abortCheckIntervalBytes";
+
+  private static final int DEFAULT_CHECKSUM_ABORT_CHECK_INTERVAL_BYTES = 10 * 1024 * 1024; // 10MB
+
+  static final int CHECKSUM_ENTIRE_FILE_ABORT_CHECK_INTERVAL_BYTES;
+  static {
+    int interval = DEFAULT_CHECKSUM_ABORT_CHECK_INTERVAL_BYTES;
+    try {
+      String value = System.getProperty(CHECKSUM_ENTIRE_FILE_ABORT_CHECK_INTERVAL_SYSPROP);
+      if (value != null) {
+        int parsed = Integer.parseInt(value);
+        if (parsed > 0) {
+          interval = parsed;
+        }
+      }
+    } catch (@SuppressWarnings("unused") SecurityException | NumberFormatException ignored) {
+      // Ignore security exceptions in restricted environments or invalid number formats
+    }
+    CHECKSUM_ENTIRE_FILE_ABORT_CHECK_INTERVAL_BYTES = interval;
+  }
 
   /**
    * Writes a codec header, which records both a string to identify the file and a version number.
@@ -606,7 +632,10 @@ public final class CodecUtil {
   public static long checksumEntireFile(IndexInput input) throws IOException {
     IndexInput clone = input.clone();
     clone.seek(0);
-    ChecksumIndexInput in = new BufferedChecksumIndexInput(clone);
+    ChecksumIndexInput in =
+        MergeAbortThreadLocalChecker.isEnabled()
+            ? new AbortableChecksumIndexInput(clone)
+            : new BufferedChecksumIndexInput(clone);
     assert in.getFilePointer() == 0;
     if (in.length() < footerLength()) {
       throw new CorruptIndexException(
@@ -675,4 +704,27 @@ public final class CodecUtil {
   public static long readBELong(DataInput in) throws IOException {
     return (((long) readBEInt(in)) << 32) | (readBEInt(in) & 0xFFFFFFFFL);
   }
+
+  /**
+   * A BufferedChecksumIndexInput that periodically checks if the current merge should be aborted.
+   */
+  private static final class AbortableChecksumIndexInput extends BufferedChecksumIndexInput {
+
+    private int bytesSinceLastCheck = Integer.MAX_VALUE; // Forces a check on first access
+
+    AbortableChecksumIndexInput(IndexInput main) {
+      super(main);
+    }
+
+    @Override
+    public void readBytes(byte[] b, int offset, int len) throws IOException {
+      if (bytesSinceLastCheck >= CHECKSUM_ENTIRE_FILE_ABORT_CHECK_INTERVAL_BYTES) {
+        MergeAbortThreadLocalChecker.checkAborted();
+        bytesSinceLastCheck = 0;
+      }
+      super.readBytes(b, offset, len);
+      bytesSinceLastCheck += len;
+    }
+  }
+
 }

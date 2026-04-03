@@ -18,7 +18,10 @@
 package org.apache.lucene.codecs;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.lucene.index.MergeAbortThreadLocalChecker;
+import org.apache.lucene.index.MergePolicy.MergeAbortedException;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.store.BufferedChecksumIndexInput;
 import org.apache.lucene.store.ByteBuffersDataOutput;
@@ -412,5 +415,53 @@ public class TestCodecUtil extends LuceneTestCase {
     }
 
     dir.close();
+  }
+
+  public void testChecksumEntireFileWithAbortChecker() throws Exception {
+    ByteBuffersDataOutput out = new ByteBuffersDataOutput();
+    IndexOutput output = new ByteBuffersIndexOutput(out, "temp", "temp");
+    CodecUtil.writeHeader(output, "FooBar", 5);
+
+    byte[] data = new byte[1024];
+    for (int i = 0; i < 20 * 1024; i++) { // ~20MB
+      output.writeBytes(data, 0, data.length);
+    }
+    CodecUtil.writeFooter(output);
+    output.close();
+
+    IndexInput input = new ByteBuffersIndexInput(out.toDataInput(), "temp");
+
+    CodecUtil.checksumEntireFile(input);
+
+    AtomicBoolean shouldAbort = new AtomicBoolean(false);
+    MergeAbortThreadLocalChecker.set(
+        () -> {
+          if (shouldAbort.get()) {
+            throw new MergeAbortedException("test abort");
+          }
+        });
+    try {
+      CodecUtil.checksumEntireFile(input);
+    } finally {
+      MergeAbortThreadLocalChecker.clear();
+    }
+
+    if (MergeAbortThreadLocalChecker.isEnabled()) {
+      shouldAbort.set(true);
+      MergeAbortThreadLocalChecker.set(
+          () -> {
+            if (shouldAbort.get()) {
+              throw new MergeAbortedException("test abort");
+            }
+          });
+      try {
+        IOException e = expectThrows(IOException.class, () -> CodecUtil.checksumEntireFile(input));
+        assertTrue(e.getCause() instanceof MergeAbortedException);
+      } finally {
+        MergeAbortThreadLocalChecker.clear();
+      }
+    }
+
+    input.close();
   }
 }
