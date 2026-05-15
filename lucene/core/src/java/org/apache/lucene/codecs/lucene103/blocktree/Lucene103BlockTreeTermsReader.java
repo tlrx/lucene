@@ -25,6 +25,7 @@ import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.codecs.FieldsProducer;
 import org.apache.lucene.codecs.PostingsReaderBase;
 import org.apache.lucene.index.CorruptIndexException;
+import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.IndexFileNames;
@@ -305,6 +306,13 @@ public final class Lucene103BlockTreeTermsReader extends FieldsProducer {
 
     // postings
     postingsReader.checkIntegrity();
+  }
+
+  @Override
+  public void checkIntegrity(MergePolicy.AbortChecker abortChecker) throws IOException {
+    CodecUtil.checksumEntireFile(indexIn, abortChecker);
+    CodecUtil.checksumEntireFile(termsIn, abortChecker);
+    postingsReader.checkIntegrity(abortChecker);
   }
 
   @Override

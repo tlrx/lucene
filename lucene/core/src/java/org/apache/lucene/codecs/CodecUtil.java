@@ -22,6 +22,7 @@ import java.util.Arrays;
 import org.apache.lucene.index.CorruptIndexException;
 import org.apache.lucene.index.IndexFormatTooNewException;
 import org.apache.lucene.index.IndexFormatTooOldException;
+import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.store.BufferedChecksumIndexInput;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataInput;
@@ -604,9 +605,27 @@ public final class CodecUtil {
    * extract the checksum value, call {@link #retrieveChecksum}.
    */
   public static long checksumEntireFile(IndexInput input) throws IOException {
+    return checksumEntireFile(input, MergePolicy.AbortChecker.NOOP);
+  }
+
+  /**
+   * Like {@link #checksumEntireFile(IndexInput)}, but periodically checks if the operation should
+   * be aborted via the provided {@link MergePolicy.AbortChecker}. This is useful during merge
+   * operations where the merge may be cancelled while a long-running integrity check is in progress.
+   *
+   * @param input the index input to checksum
+   * @param abortChecker checked periodically during the read; throws {@link
+   *     MergePolicy.MergeAbortedException} if the operation should stop
+   */
+  public static long checksumEntireFile(IndexInput input, MergePolicy.AbortChecker abortChecker)
+      throws IOException {
     IndexInput clone = input.clone();
     clone.seek(0);
     ChecksumIndexInput in = new BufferedChecksumIndexInput(clone);
+    int intervalBytes = abortChecker.getAbortCheckIntervalBytes();
+    if (intervalBytes > 0) {
+      in = new AbortableChecksumIndexInput(in, abortChecker, intervalBytes);
+    }
     assert in.getFilePointer() == 0;
     if (in.length() < footerLength()) {
       throw new CorruptIndexException(
@@ -674,5 +693,71 @@ public final class CodecUtil {
   /** read long value from header / footer with big endian order */
   public static long readBELong(DataInput in) throws IOException {
     return (((long) readBEInt(in)) << 32) | (readBEInt(in) & 0xFFFFFFFFL);
+  }
+
+  /**
+   * A ChecksumIndexInput wrapper that periodically checks if the current merge should be aborted.
+   * The check is performed in {@link #readBytes} since that is what {@link
+   * ChecksumIndexInput#seek} calls in a loop to compute the checksum.
+   */
+  private static final class AbortableChecksumIndexInput extends ChecksumIndexInput {
+
+    private final ChecksumIndexInput delegate;
+    private final MergePolicy.AbortChecker abortChecker;
+    private final int intervalBytes;
+    private int bytesSinceLastCheck;
+
+    AbortableChecksumIndexInput(
+        ChecksumIndexInput delegate, MergePolicy.AbortChecker abortChecker, int intervalBytes) {
+      super(delegate.toString());
+      this.delegate = delegate;
+      this.abortChecker = abortChecker;
+      this.intervalBytes = intervalBytes;
+    }
+
+    @Override
+    public byte readByte() throws IOException {
+      return delegate.readByte();
+    }
+
+    @Override
+    public void readBytes(byte[] b, int offset, int len) throws IOException {
+      bytesSinceLastCheck += len;
+      if (bytesSinceLastCheck >= intervalBytes) {
+        abortChecker.checkAborted();
+        bytesSinceLastCheck = 0;
+      }
+      delegate.readBytes(b, offset, len);
+    }
+
+    @Override
+    public long getChecksum() throws IOException {
+      return delegate.getChecksum();
+    }
+
+    @Override
+    public void close() throws IOException {
+      delegate.close();
+    }
+
+    @Override
+    public long getFilePointer() {
+      return delegate.getFilePointer();
+    }
+
+    @Override
+    public long length() {
+      return delegate.length();
+    }
+
+    @Override
+    public IndexInput clone() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public IndexInput slice(String sliceDescription, long offset, long length) throws IOException {
+      throw new UnsupportedOperationException();
+    }
   }
 }

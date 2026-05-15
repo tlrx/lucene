@@ -38,6 +38,12 @@ abstract class FieldsIndex implements Cloneable, Closeable {
   /** Check the integrity of the index. */
   abstract void checkIntegrity() throws IOException;
 
+  /** Check the integrity of the index, with periodic merge abort checking. */
+  void checkIntegrity(org.apache.lucene.index.MergePolicy.AbortChecker abortChecker)
+      throws IOException {
+    checkIntegrity();
+  }
+
   @Override
   public abstract FieldsIndex clone();
 }

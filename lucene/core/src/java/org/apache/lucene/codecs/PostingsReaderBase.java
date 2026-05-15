@@ -84,6 +84,18 @@ public abstract class PostingsReaderBase implements Closeable {
    */
   public abstract void checkIntegrity() throws IOException;
 
+  /**
+   * Like {@link #checkIntegrity()}, but periodically checks if the merge has been aborted.
+   *
+   * <p>The default implementation delegates to {@link #checkIntegrity()}.
+   *
+   * @lucene.internal
+   */
+  public void checkIntegrity(org.apache.lucene.index.MergePolicy.AbortChecker abortChecker)
+      throws IOException {
+    checkIntegrity();
+  }
+
   @Override
   public abstract void close() throws IOException;
 }

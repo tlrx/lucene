@@ -37,6 +37,7 @@ import org.apache.lucene.index.FreqAndNormBuffer;
 import org.apache.lucene.index.Impacts;
 import org.apache.lucene.index.ImpactsEnum;
 import org.apache.lucene.index.IndexFileNames;
+import org.apache.lucene.index.MergePolicy;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.SegmentReadState;
@@ -1480,6 +1481,19 @@ public final class Lucene104PostingsReader extends PostingsReaderBase {
     }
     if (payIn != null) {
       CodecUtil.checksumEntireFile(payIn);
+    }
+  }
+
+  @Override
+  public void checkIntegrity(MergePolicy.AbortChecker abortChecker) throws IOException {
+    if (docIn != null) {
+      CodecUtil.checksumEntireFile(docIn, abortChecker);
+    }
+    if (posIn != null) {
+      CodecUtil.checksumEntireFile(posIn, abortChecker);
+    }
+    if (payIn != null) {
+      CodecUtil.checksumEntireFile(payIn, abortChecker);
     }
   }
 

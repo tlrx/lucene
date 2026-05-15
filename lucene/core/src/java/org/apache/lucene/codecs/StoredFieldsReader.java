@@ -48,6 +48,21 @@ public abstract class StoredFieldsReader extends StoredFields implements Cloneab
   public abstract void checkIntegrity() throws IOException;
 
   /**
+   * Like {@link #checkIntegrity()}, but periodically checks if the merge has been aborted.
+   * Subclasses should override this to pass the abort checker to {@link
+   * CodecUtil#checksumEntireFile(org.apache.lucene.store.IndexInput,
+   * org.apache.lucene.index.MergePolicy.AbortChecker)}.
+   *
+   * <p>The default implementation delegates to {@link #checkIntegrity()}.
+   *
+   * @lucene.internal
+   */
+  public void checkIntegrity(org.apache.lucene.index.MergePolicy.AbortChecker abortChecker)
+      throws IOException {
+    checkIntegrity();
+  }
+
+  /**
    * Returns an instance optimized for merging. This instance may not be cloned.
    *
    * <p>The default implementation returns {@code this}

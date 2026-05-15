@@ -43,6 +43,15 @@ public abstract class FieldsProducer extends Fields implements Closeable {
   public abstract void checkIntegrity() throws IOException;
 
   /**
+   * Checks consistency of this reader, with periodic merge abort checking.
+   *
+   * @lucene.internal
+   */
+  public void checkIntegrity(org.apache.lucene.index.MergePolicy.AbortChecker abortChecker) throws IOException {
+    checkIntegrity();
+  }
+
+  /**
    * Returns an instance optimized for merging. This instance may only be consumed in the thread
    * that called {@link #getMergeInstance()}.
    *

@@ -157,4 +157,9 @@ final class FieldsIndexReader extends FieldsIndex {
   void checkIntegrity() throws IOException {
     CodecUtil.checksumEntireFile(indexInput);
   }
+
+  @Override
+  void checkIntegrity(org.apache.lucene.index.MergePolicy.AbortChecker abortChecker) throws IOException {
+    CodecUtil.checksumEntireFile(indexInput, abortChecker);
+  }
 }
