@@ -107,6 +107,9 @@ public final class IndexWriterConfig extends LiveIndexWriterConfig {
    */
   public static final long DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS = 500;
 
+  /** Default interval (10 MB) between abort checks during merge integrity verification. */
+  public static final int DEFAULT_MERGE_ABORT_CHECK_INTERVAL_BYTES = 10 * 1024 * 1024;
+
   // indicates whether this config instance is already attached to a writer.
   // not final so that it can be cloned properly.
   private SetOnce<IndexWriter> writer = new SetOnce<>();
@@ -559,6 +562,25 @@ public final class IndexWriterConfig extends LiveIndexWriterConfig {
    */
   public IndexWriterConfig setParentField(String parentField) {
     this.parentField = parentField;
+    return this;
+  }
+
+  /**
+   * Expert: sets the interval in bytes between abort checks during merge integrity verification.
+   * During merges, codec readers verify file integrity by reading entire files to compute checksums.
+   * This setting controls how often the merge abort flag is checked during these reads. Smaller
+   * values allow merges to be aborted more promptly but add slight overhead.
+   *
+   * <p>Default is {@value #DEFAULT_MERGE_ABORT_CHECK_INTERVAL_BYTES} bytes (10 MB).
+   *
+   * @param intervalBytes the interval in bytes, must be positive
+   */
+  public IndexWriterConfig setMergeAbortCheckIntervalBytes(int intervalBytes) {
+    if (intervalBytes <= 0) {
+      throw new IllegalArgumentException(
+          "mergeAbortCheckIntervalBytes must be positive, got: " + intervalBytes);
+    }
+    this.mergeAbortCheckIntervalBytes = intervalBytes;
     return this;
   }
 }

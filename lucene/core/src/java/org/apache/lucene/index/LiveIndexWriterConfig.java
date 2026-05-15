@@ -117,6 +117,9 @@ public class LiveIndexWriterConfig {
   /** The IndexWriter event listener to record key events * */
   protected IndexWriterEventListener eventListener;
 
+  /** Interval in bytes between abort checks during merge integrity verification. */
+  protected volatile int mergeAbortCheckIntervalBytes;
+
   // used by IndexWriterConfig
   LiveIndexWriterConfig(Analyzer analyzer) {
     this.analyzer = analyzer;
@@ -140,6 +143,7 @@ public class LiveIndexWriterConfig {
     perThreadHardLimitMB = IndexWriterConfig.DEFAULT_RAM_PER_THREAD_HARD_LIMIT_MB;
     maxFullFlushMergeWaitMillis = IndexWriterConfig.DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS;
     eventListener = IndexWriterEventListener.NO_OP_LISTENER;
+    mergeAbortCheckIntervalBytes = IndexWriterConfig.DEFAULT_MERGE_ABORT_CHECK_INTERVAL_BYTES;
   }
 
   /** Returns the default analyzer to use for indexing documents. */
@@ -461,6 +465,14 @@ public class LiveIndexWriterConfig {
     return eventListener;
   }
 
+  /**
+   * Returns the interval in bytes between abort checks during merge integrity verification. See
+   * {@link IndexWriterConfig#setMergeAbortCheckIntervalBytes(int)}.
+   */
+  public int getMergeAbortCheckIntervalBytes() {
+    return mergeAbortCheckIntervalBytes;
+  }
+
   /** Returns the parent document field name if configured. */
   public String getParentField() {
     return parentField;
@@ -495,6 +507,7 @@ public class LiveIndexWriterConfig {
     sb.append("leafSorter=").append(getLeafSorter()).append("\n");
     sb.append("eventListener=").append(getIndexWriterEventListener()).append("\n");
     sb.append("parentField=").append(getParentField()).append("\n");
+    sb.append("mergeAbortCheckIntervalBytes=").append(getMergeAbortCheckIntervalBytes()).append("\n");
     return sb.toString();
   }
 }

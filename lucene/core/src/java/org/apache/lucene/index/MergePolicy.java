@@ -188,7 +188,7 @@ public abstract class MergePolicy {
    *
    * @lucene.experimental
    */
-  public static class OneMerge implements AbortChecker {
+  public static class OneMerge {
     private final CompletableFuture<Boolean> mergeCompleted = new CompletableFuture<>();
     SegmentCommitInfo info; // used by IndexWriter
     boolean registerDone; // used by IndexWriter
@@ -576,13 +576,24 @@ public abstract class MergePolicy {
    *
    * @lucene.experimental
    */
-  @FunctionalInterface
   public interface AbortChecker {
-    /** A no-op checker */
-    AbortChecker NOOP = () -> {};
-
     /** Checks if the merge should be aborted, throwing MergeAbortedException if so. */
     void checkAborted() throws MergeAbortedException;
+
+    /** Interval in bytes between abort checks during merge integrity verification. */
+    int getAbortCheckIntervalBytes();
+
+    /** A no-op checker */
+    AbortChecker NOOP = new AbortChecker() {
+      @Override
+      public void checkAborted() {
+      }
+
+      @Override
+      public int getAbortCheckIntervalBytes() {
+        return 0;
+      }
+    };
   }
 
   /**

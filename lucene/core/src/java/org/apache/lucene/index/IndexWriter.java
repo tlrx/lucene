@@ -3447,6 +3447,23 @@ public class IndexWriter
       }
     }
 
+    final MergePolicy.AbortChecker mergeAbortChecker;
+    if (config.getMergeAbortCheckIntervalBytes() <= 0) {
+      mergeAbortChecker = MergePolicy.AbortChecker.NOOP;
+    } else {
+      mergeAbortChecker = new MergePolicy.AbortChecker() {
+        @Override
+        public void checkAborted() throws MergePolicy.MergeAbortedException {
+          merge.checkAborted();
+        }
+
+        @Override
+        public int getAbortCheckIntervalBytes() {
+          return config.getMergeAbortCheckIntervalBytes();
+        }
+      };
+    }
+
     SegmentMerger merger =
         new SegmentMerger(
             readers,
@@ -3456,7 +3473,7 @@ public class IndexWriter
             globalFieldNumberMap,
             context,
             intraMergeExecutor,
-            merge);
+            mergeAbortChecker);
     try {
       if (!merger.shouldMerge()) {
         return;
@@ -5249,6 +5266,23 @@ public class IndexWriter
         }
       }
 
+      final MergePolicy.AbortChecker mergeAbortChecker;
+      if (config.getMergeAbortCheckIntervalBytes() <= 0) {
+        mergeAbortChecker = MergePolicy.AbortChecker.NOOP;
+      } else {
+        mergeAbortChecker = new MergePolicy.AbortChecker() {
+          @Override
+          public void checkAborted() throws MergePolicy.MergeAbortedException {
+            merge.checkAborted();
+          }
+
+          @Override
+          public int getAbortCheckIntervalBytes() {
+            return config.getMergeAbortCheckIntervalBytes();
+          }
+        };
+      }
+
       final SegmentMerger merger =
           new SegmentMerger(
               mergeReaders,
@@ -5258,7 +5292,7 @@ public class IndexWriter
               globalFieldNumberMap,
               context,
               intraMergeExecutor,
-              merge);
+              mergeAbortChecker);
       MergeState mergeState = merger.mergeState;
       MergeState.DocMap[] docMaps;
       try {
