@@ -188,7 +188,7 @@ public abstract class MergePolicy {
    *
    * @lucene.experimental
    */
-  public static class OneMerge {
+  public static class OneMerge implements AbortChecker {
     private final CompletableFuture<Boolean> mergeCompleted = new CompletableFuture<>();
     SegmentCommitInfo info; // used by IndexWriter
     boolean registerDone; // used by IndexWriter
@@ -568,6 +568,21 @@ public abstract class MergePolicy {
     public MergeException(Throwable exc) {
       super(exc);
     }
+  }
+
+  /**
+   * Interface for checking whether a merge has been aborted. Implementations should throw {@link MergeAbortedException}
+   * if the merge should stop.
+   *
+   * @lucene.experimental
+   */
+  @FunctionalInterface
+  public interface AbortChecker {
+    /** A no-op checker */
+    AbortChecker NOOP = () -> {};
+
+    /** Checks if the merge should be aborted, throwing MergeAbortedException if so. */
+    void checkAborted() throws MergeAbortedException;
   }
 
   /**
